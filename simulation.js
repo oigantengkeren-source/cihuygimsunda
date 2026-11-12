@@ -756,6 +756,11 @@ function renderCanvas() {
 // AUTO-RESTORE SESSION SAAT REFRESH BROWSER
 // ============================================================================
 window.addEventListener('beforeunload', () => {
+  if (roomSystem.isHost && roomSystem.room) {
+    try {
+      roomSystem._broadcastToGuests({ type: 'HOST_REFRESHING' });
+    } catch (e) {}
+  }
   if (roomSystem.peer) {
     try {
       roomSystem.peer.destroy();

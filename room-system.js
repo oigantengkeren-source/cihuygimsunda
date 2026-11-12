@@ -114,6 +114,7 @@
       this.heartbeatInterval = null;
       // Koneksi ke Host (Khusus Guest: DataConnection)
       this.hostConnection = null;
+      this._isReconnectingToHost = false;
     }
 
     /**
@@ -154,7 +155,7 @@
      * @param {string} [customCode] Opsional: kode kustom jika ingin ditentukan sendiri
      * @returns {Promise<Object>} Data room yang berhasil dibuat
      */
-    async createRoom(playerName, customCode = null) {
+    async createRoom(playerName, customCode = null, _retryCount = 0) {
       await ensurePeerJSLoaded();
       this.leaveRoom();
 
@@ -200,10 +201,18 @@
 
         peer.on('error', (err) => {
           if (err.type === 'unavailable-id') {
-            // Jika kebetulan kode sudah dipakai, generate ulang otomatis
             peer.destroy();
             if (!customCode) {
               return this.createRoom(playerName).then(resolve).catch(reject);
+            }
+            // Jika Host sedang me-refresh halaman, tunggu server PeerJS melepaskan ID sesi lama
+            if (_retryCount < 5) {
+              setTimeout(() => {
+                this.createRoom(playerName, customCode, _retryCount + 1)
+                  .then(resolve)
+                  .catch(reject);
+              }, 1000);
+              return;
             }
             const msg = `Kode Room "${roomCode}" sedang digunakan. Silakan coba kode lain.`;
             this.onError(msg);
@@ -375,9 +384,9 @@
             id: guestId,
             name: guestName,
             isHost: false,
-            isReady: false,
-            color: this._pickColor(usedColors),
-            score: 0,
+            isReady: typeof packet.isReady === 'boolean' ? packet.isReady : false,
+            color: packet.color || this._pickColor(usedColors),
+            score: typeof packet.score === 'number' ? packet.score : 0,
             customData: packet.customData || {}
           };
 
@@ -569,12 +578,23 @@
             }
           });
 
-          conn.on('close', () => {
-            if (this.room) {
-              this.onError('Koneksi ke Host terputus (Host menutup room).');
-              this.leaveRoom();
+          const handleHostDisconnect = () => {
+            if (this.room && !this.isHost && !this._isReconnectingToHost) {
+              this._attemptGuestReconnectToHost(cleanCode, cleanName, customData);
             }
-          });
+          };
+
+          conn.on('close', handleHostDisconnect);
+          conn.on('error', handleHostDisconnect);
+
+          if (conn.peerConnection) {
+            conn.peerConnection.oniceconnectionstatechange = () => {
+              const state = conn.peerConnection.iceConnectionState;
+              if (state === 'disconnected' || state === 'failed') {
+                handleHostDisconnect();
+              }
+            };
+          }
         });
 
         peer.on('error', (err) => {
@@ -607,8 +627,15 @@
           break;
         }
         case 'HOST_CLOSED_ROOM': {
+          this._isReconnectingToHost = false;
           this.onError('Host telah menutup room ini.');
           this.leaveRoom();
+          break;
+        }
+        case 'HOST_REFRESHING': {
+          if (!this._isReconnectingToHost && this.room) {
+            this._attemptGuestReconnectToHost(this.room.code, this.getMyPlayer()?.name || 'Pemain');
+          }
           break;
         }
         case 'ROOM_STATE_UPDATE': {
@@ -651,6 +678,125 @@
           break;
         }
       }
+    }
+
+    /**
+     * Otomatis mencoba menyambung kembali ke Host jika Host me-refresh browser
+     */
+    _attemptGuestReconnectToHost(roomCode, playerName, customData = {}) {
+      if (this.isHost || !this.room || this._isReconnectingToHost) return;
+      this._isReconnectingToHost = true;
+
+      const targetPeerId = PEER_PREFIX + roomCode;
+      const myPlayer = this.getMyPlayer();
+      const myReady = myPlayer ? myPlayer.isReady : false;
+      const myColor = myPlayer ? myPlayer.color : null;
+      const myScore = myPlayer ? myPlayer.score : 0;
+
+      this.onLog({
+        time: new Date().toLocaleTimeString('id-ID'),
+        event: 'HOST_REFRESHING',
+        detail: 'Host sedang me-refresh, mencoba menyambung kembali...'
+      });
+
+      this.onChatMessage({
+        system: true,
+        text: 'Host sedang memuat ulang halaman. Menyambungkan kembali...',
+        time: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+      });
+
+      let attempts = 0;
+      const maxAttempts = 10; // 10 x 1.2s = 12 detik total
+
+      const tryReconnect = () => {
+        if (!this.room || !this._isReconnectingToHost) return;
+        attempts++;
+
+        if (this.hostConnection) {
+          try { this.hostConnection.close(); } catch (e) {}
+          this.hostConnection = null;
+        }
+
+        if (!this.peer || this.peer.destroyed) {
+          this.peer = new global.Peer(DEFAULT_PEER_CONFIG);
+        }
+
+        const connectToNewHost = () => {
+          if (!this._isReconnectingToHost) return;
+          const conn = this.peer.connect(targetPeerId, { reliable: true });
+
+          const connTimeout = setTimeout(() => {
+            if (this._isReconnectingToHost) {
+              try { conn.close(); } catch (e) {}
+              if (attempts < maxAttempts) {
+                setTimeout(tryReconnect, 1200);
+              } else {
+                this._isReconnectingToHost = false;
+                this.onError('Koneksi ke Host terputus (Host telah meninggalkan room).');
+                this.leaveRoom();
+              }
+            }
+          }, 2500);
+
+          conn.on('open', () => {
+            clearTimeout(connTimeout);
+            this.hostConnection = conn;
+            this._isReconnectingToHost = false;
+
+            const handleDisconnectAgain = () => {
+              if (this.room && !this.isHost && !this._isReconnectingToHost) {
+                this._attemptGuestReconnectToHost(roomCode, playerName, customData);
+              }
+            };
+
+            conn.on('close', handleDisconnectAgain);
+            conn.on('error', handleDisconnectAgain);
+            if (conn.peerConnection) {
+              conn.peerConnection.oniceconnectionstatechange = () => {
+                const s = conn.peerConnection.iceConnectionState;
+                if (s === 'disconnected' || s === 'failed') handleDisconnectAgain();
+              };
+            }
+
+            conn.on('data', (packet) => {
+              if (!packet || !packet.type) return;
+              if (packet.type === 'JOIN_ACCEPTED') {
+                this.myPlayerId = packet.playerId;
+                this.room = packet.room;
+                this._log('JOIN_SUCCESS', `Berhasil terhubung kembali ke room ${roomCode}`);
+                this.onRoomUpdated(this.room);
+              } else if (packet.type === 'JOIN_REJECTED') {
+                this.leaveRoom();
+                this.onError(packet.reason || 'Gagal bergabung ke room.');
+              } else {
+                this._handleGuestReceiveData(packet);
+              }
+            });
+
+            // Kirim request join kembali dengan data pemain sebelumnya
+            conn.send({
+              type: 'JOIN_REQUEST',
+              playerName,
+              isReady: myReady,
+              color: myColor,
+              score: myScore,
+              customData
+            });
+          });
+
+          conn.on('error', () => {
+            // Ditangani oleh timeout
+          });
+        };
+
+        if (this.peer.open) {
+          connectToNewHost();
+        } else {
+          this.peer.once('open', connectToNewHost);
+        }
+      };
+
+      setTimeout(tryReconnect, 1000);
     }
 
     /**
@@ -844,6 +990,7 @@
      */
     leaveRoom() {
       this._stopHostHeartbeat();
+      this._isReconnectingToHost = false;
 
       if (!this.isHost && this.hostConnection && this.hostConnection.open) {
         try {
