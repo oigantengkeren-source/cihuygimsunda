@@ -44,6 +44,19 @@
     '#84CC16'  // Lime
   ];
 
+  // Konfigurasi WebRTC STUN Server publik agar bisa tembus NAT / Data Seluler / Beda Wi-Fi
+  const DEFAULT_PEER_CONFIG = {
+    debug: 1,
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun.services.mozilla.com' }
+      ]
+    }
+  };
+
   // Helper: Pastikan PeerJS sudah dimuat di halaman
   function ensurePeerJSLoaded() {
     return new Promise((resolve, reject) => {
@@ -148,9 +161,7 @@
       const peerId = PEER_PREFIX + roomCode;
 
       return new Promise((resolve, reject) => {
-        const peer = new global.Peer(peerId, {
-          debug: 1
-        });
+        const peer = new global.Peer(peerId, DEFAULT_PEER_CONFIG);
 
         peer.on('open', (id) => {
           this.peer = peer;
@@ -389,7 +400,7 @@
       const targetPeerId = PEER_PREFIX + cleanCode;
 
       return new Promise((resolve, reject) => {
-        const peer = new global.Peer({ debug: 1 });
+        const peer = new global.Peer(DEFAULT_PEER_CONFIG);
         let isResolved = false;
 
         const timeout = setTimeout(() => {
