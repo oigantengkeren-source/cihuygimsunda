@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const os = require('os');
 
 const app = express();
 const server = http.createServer(app);
@@ -13,8 +14,28 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 3000;
 
+function getLocalIp() {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return 'localhost';
+}
+
 // Sajikan file static dari folder public
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Endpoint untuk info jaringan (membantu menampilkan IP ke pemain di UI)
+app.get('/api/info', (req, res) => {
+  res.json({
+    localIp: getLocalIp(),
+    port: PORT
+  });
+});
 
 // Simpan data semua room di memory
 const rooms = new Map();
@@ -361,6 +382,11 @@ io.on('connection', (socket) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`Server multiplayer aktif di http://localhost:${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+  const localIp = getLocalIp();
+  console.log(`\n==================================================`);
+  console.log(`🚀 Server Multiplayer Berjalan!`);
+  console.log(`- Di Komputer ini : http://localhost:${PORT}`);
+  console.log(`- Di HP / Device Lain (1 WiFi): http://${localIp}:${PORT}`);
+  console.log(`==================================================\n`);
 });

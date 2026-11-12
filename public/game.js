@@ -107,6 +107,22 @@ function switchScreen(screenName) {
   });
 }
 
+let serverInfo = null;
+
+// Ambil info IP jaringan dari server
+fetch('/api/info')
+  .then(res => res.json())
+  .then(data => {
+    serverInfo = data;
+    const banner = document.getElementById('network-ip-banner');
+    const ipText = document.getElementById('network-ip-text');
+    if (banner && ipText && data.localIp && data.localIp !== 'localhost') {
+      banner.style.display = 'inline-block';
+      ipText.textContent = `http://${data.localIp}:${data.port}`;
+    }
+  })
+  .catch(() => {});
+
 // Pre-fill nama jika pernah disimpan
 if (myPlayerName) {
   inputPlayerName.value = myPlayerName;
@@ -172,11 +188,16 @@ btnCopyCode.addEventListener('click', () => {
 
 btnCopyLink.addEventListener('click', () => {
   if (!currentRoom) return;
-  const inviteUrl = `${window.location.origin}${window.location.pathname}?room=${currentRoom.code}`;
+  let origin = window.location.origin;
+  // Jika host membuka lewat localhost tapi ada IP jaringan, gunakan IP jaringan agar bisa dibuka HP/device lain
+  if ((window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') && serverInfo && serverInfo.localIp && serverInfo.localIp !== 'localhost') {
+    origin = `http://${serverInfo.localIp}:${serverInfo.port || 3000}`;
+  }
+  const inviteUrl = `${origin}${window.location.pathname}?room=${currentRoom.code}`;
   navigator.clipboard.writeText(inviteUrl).then(() => {
-    showToast('Link undangan berhasil disalin ke clipboard!', 'success');
+    showToast('Link undangan berhasil disalin!', 'success');
   }).catch(() => {
-    showToast('Gagal menyalin link', 'error');
+    showToast(`Link: ${inviteUrl}`, 'info');
   });
 });
 
