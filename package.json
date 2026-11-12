@@ -1,0 +1,22 @@
+{
+  "name": "cihuygimsunda",
+  "version": "1.0.0",
+  "description": "Web-based multiplayer game lobby system with Room Code (Host & Join)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  },
+  "keywords": [
+    "multiplayer",
+    "socket.io",
+    "game-lobby",
+    "room-code"
+  ],
+  "author": "oigantengkeren-source",
+  "license": "MIT"
+}
