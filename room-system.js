@@ -244,29 +244,9 @@
       if (!this.peer) return;
 
       this.peer.on('connection', (conn) => {
-        const attachWebRTCListeners = () => {
-          if (conn.peerConnection) {
-            conn.peerConnection.oniceconnectionstatechange = () => {
-              const state = conn.peerConnection.iceConnectionState;
-              if (state === 'disconnected' || state === 'failed' || state === 'closed') {
-                this._handleGuestDisconnect(conn.peer);
-              }
-            };
-            conn.peerConnection.onconnectionstatechange = () => {
-              const state = conn.peerConnection.connectionState;
-              if (state === 'disconnected' || state === 'failed' || state === 'closed') {
-                this._handleGuestDisconnect(conn.peer);
-              }
-            };
-          }
-        };
-
         conn.on('open', () => {
           this.guestLastSeen.set(conn.peer, Date.now());
-          attachWebRTCListeners();
         });
-
-        attachWebRTCListeners();
 
         conn.on('data', (packet) => {
           this.guestLastSeen.set(conn.peer, Date.now());
@@ -274,11 +254,19 @@
         });
 
         conn.on('close', () => {
-          this._handleGuestDisconnect(conn.peer);
+          // Hanya proses disconnect jika conn ini masih merupakan koneksi aktif untuk peer tersebut
+          const activeConn = this.guestConnections.get(conn.peer);
+          if (!activeConn || activeConn === conn) {
+            this._handleGuestDisconnect(conn.peer);
+          }
         });
 
         conn.on('error', () => {
-          this._handleGuestDisconnect(conn.peer);
+          // Hanya proses disconnect jika conn ini masih merupakan koneksi aktif untuk peer tersebut
+          const activeConn = this.guestConnections.get(conn.peer);
+          if (!activeConn || activeConn === conn) {
+            this._handleGuestDisconnect(conn.peer);
+          }
         });
       });
     }
@@ -314,7 +302,7 @@
             this._handleGuestDisconnect(guestId);
           }
         });
-      }, 1200);
+      }, 3000);
     }
 
     _stopHostHeartbeat() {
@@ -523,6 +511,12 @@
      */
     _handleGuestDisconnect(guestId) {
       if (!this.isHost || !this.room) return;
+
+      // Guard: jika koneksi aktif untuk guestId ini masih terbuka, berarti ini event
+      // dari koneksi lama yang sudah digantikan oleh reconnect — abaikan
+      const activeConn = this.guestConnections.get(guestId);
+      if (activeConn && activeConn.open) return;
+
       const idx = this.room.players.findIndex((p) => p.id === guestId);
       if (idx !== -1) {
         const removedPlayer = this.room.players[idx];
