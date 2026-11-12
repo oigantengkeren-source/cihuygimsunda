@@ -110,6 +110,8 @@
 
       // Daftar koneksi aktif (Khusus Host: Map<playerId, DataConnection>)
       this.guestConnections = new Map();
+      this.guestLastSeen = new Map();
+      this.heartbeatInterval = null;
       // Koneksi ke Host (Khusus Guest: DataConnection)
       this.hostConnection = null;
     }
@@ -188,6 +190,7 @@
           };
 
           this._setupHostListeners();
+          this._startHostHeartbeat();
           this._log('CREATE_ROOM', `Room ${roomCode} dibuat oleh ${cleanName}`);
 
           this.onRoomCreated(this.room);
@@ -220,11 +223,32 @@
       if (!this.peer) return;
 
       this.peer.on('connection', (conn) => {
+        const attachWebRTCListeners = () => {
+          if (conn.peerConnection) {
+            conn.peerConnection.oniceconnectionstatechange = () => {
+              const state = conn.peerConnection.iceConnectionState;
+              if (state === 'disconnected' || state === 'failed' || state === 'closed') {
+                this._handleGuestDisconnect(conn.peer);
+              }
+            };
+            conn.peerConnection.onconnectionstatechange = () => {
+              const state = conn.peerConnection.connectionState;
+              if (state === 'disconnected' || state === 'failed' || state === 'closed') {
+                this._handleGuestDisconnect(conn.peer);
+              }
+            };
+          }
+        };
+
         conn.on('open', () => {
-          // Tunggu pesan JOIN_REQUEST dari guest
+          this.guestLastSeen.set(conn.peer, Date.now());
+          attachWebRTCListeners();
         });
 
+        attachWebRTCListeners();
+
         conn.on('data', (packet) => {
+          this.guestLastSeen.set(conn.peer, Date.now());
           this._handleHostReceiveData(conn, packet);
         });
 
@@ -239,15 +263,100 @@
     }
 
     /**
+     * Heartbeat otomatis dari Host ke semua Guest agar jika ada pemain yang
+     * menutup browser / hilang sinyal, pemain tersebut langsung dihapus dari room
+     */
+    _startHostHeartbeat() {
+      this._stopHostHeartbeat();
+      this.heartbeatInterval = setInterval(() => {
+        if (!this.isHost || !this.room) {
+          this._stopHostHeartbeat();
+          return;
+        }
+
+        const now = Date.now();
+        this.guestConnections.forEach((conn, guestId) => {
+          if (!conn || !conn.open) {
+            this._handleGuestDisconnect(guestId);
+            return;
+          }
+          const lastSeen = this.guestLastSeen.get(guestId) || now;
+          if (now - lastSeen > 6500) {
+            // Lebih dari 6.5 detik tidak ada sinyal, putuskan dan hapus pemain
+            this._handleGuestDisconnect(guestId);
+            try { conn.close(); } catch (e) {}
+            return;
+          }
+          try {
+            conn.send({ type: '_PING', timestamp: now });
+          } catch (e) {
+            this._handleGuestDisconnect(guestId);
+          }
+        });
+      }, 2500);
+    }
+
+    _stopHostHeartbeat() {
+      if (this.heartbeatInterval) {
+        clearInterval(this.heartbeatInterval);
+        this.heartbeatInterval = null;
+      }
+    }
+
+    /**
      * Host memproses paket data yang masuk dari Guest
      */
     _handleHostReceiveData(conn, packet) {
       if (!packet || !packet.type || !this.room) return;
 
       switch (packet.type) {
+        case '_PONG': {
+          this.guestLastSeen.set(conn.peer, Date.now());
+          break;
+        }
+
         case 'JOIN_REQUEST': {
           const guestName = (packet.playerName || 'Pemain').trim().slice(0, 16) || 'Pemain';
           const guestId = conn.peer;
+
+          // Cek apakah pemain dengan nama ini sedang reconnect (misal refresh browser)
+          const existingIdx = this.room.players.findIndex(
+            (p) => !p.isHost && p.name.toLowerCase() === guestName.toLowerCase()
+          );
+
+          if (existingIdx !== -1) {
+            const existingPlayer = this.room.players[existingIdx];
+            const oldId = existingPlayer.id;
+
+            // Bersihkan koneksi lama jika masih tersisa
+            if (oldId !== guestId && this.guestConnections.has(oldId)) {
+              try { this.guestConnections.get(oldId).close(); } catch (e) {}
+              this.guestConnections.delete(oldId);
+              this.guestLastSeen.delete(oldId);
+            }
+
+            // Perbarui ID pemain ke koneksi baru
+            existingPlayer.id = guestId;
+            if (packet.customData) {
+              existingPlayer.customData = { ...existingPlayer.customData, ...packet.customData };
+            }
+            this.guestConnections.set(guestId, conn);
+            this.guestLastSeen.set(guestId, Date.now());
+
+            conn.send({
+              type: 'JOIN_ACCEPTED',
+              playerId: guestId,
+              room: this.room
+            });
+
+            this._broadcastRoomState();
+            this._broadcastSystemChat(`${existingPlayer.name} kembali terhubung ke dalam room.`);
+            this._log('PLAYER_REJOIN', `${existingPlayer.name} (${guestId}) reconnect ke room`);
+
+            this.onPlayerJoined(existingPlayer);
+            this.onRoomUpdated(this.room);
+            break;
+          }
 
           if (this.room.players.length >= this.room.maxPlayers) {
             conn.send({ type: 'JOIN_REJECTED', reason: 'Room sudah penuh!' });
@@ -274,6 +383,7 @@
 
           this.room.players.push(newPlayer);
           this.guestConnections.set(guestId, conn);
+          this.guestLastSeen.set(guestId, Date.now());
 
           // Kirim konfirmasi ke guest yang baru masuk
           conn.send({
@@ -364,7 +474,13 @@
       if (idx !== -1) {
         const removedPlayer = this.room.players[idx];
         this.room.players.splice(idx, 1);
+
+        const conn = this.guestConnections.get(guestId);
+        if (conn) {
+          try { conn.close(); } catch (e) {}
+        }
         this.guestConnections.delete(guestId);
+        this.guestLastSeen.delete(guestId);
 
         this._broadcastRoomState();
         this._broadcastSystemChat(`${removedPlayer.name} telah keluar dari room.`);
@@ -482,6 +598,19 @@
      */
     _handleGuestReceiveData(packet) {
       switch (packet.type) {
+        case '_PING': {
+          if (this.hostConnection && this.hostConnection.open) {
+            try {
+              this.hostConnection.send({ type: '_PONG', timestamp: packet.timestamp });
+            } catch (e) {}
+          }
+          break;
+        }
+        case 'HOST_CLOSED_ROOM': {
+          this.onError('Host telah menutup room ini.');
+          this.leaveRoom();
+          break;
+        }
         case 'ROOM_STATE_UPDATE': {
           this.room = packet.room;
           this.onRoomUpdated(this.room);
@@ -714,33 +843,40 @@
      * Keluar dari room & putuskan semua koneksi
      */
     leaveRoom() {
+      this._stopHostHeartbeat();
+
       if (!this.isHost && this.hostConnection && this.hostConnection.open) {
         try {
           this.hostConnection.send({ type: 'LEAVE_ROOM' });
-          this.hostConnection.close();
         } catch (e) {}
       }
 
-      if (this.isHost) {
+      if (this.isHost && this.room) {
+        this._broadcastToGuests({ type: 'HOST_CLOSED_ROOM' });
         this.guestConnections.forEach((conn) => {
           try {
             conn.close();
           } catch (e) {}
         });
         this.guestConnections.clear();
+        this.guestLastSeen.clear();
       }
 
-      if (this.peer) {
-        try {
-          this.peer.destroy();
-        } catch (e) {}
-      }
+      const hostConn = this.hostConnection;
+      const peer = this.peer;
 
       this.peer = null;
       this.hostConnection = null;
       this.room = null;
       this.myPlayerId = null;
       this.isHost = false;
+
+      setTimeout(() => {
+        try {
+          if (hostConn) hostConn.close();
+          if (peer) peer.destroy();
+        } catch (e) {}
+      }, 100);
     }
 
     /**

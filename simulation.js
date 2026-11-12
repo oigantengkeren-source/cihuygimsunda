@@ -136,6 +136,15 @@ const roomSystem = new CihuyRoomSystem({
     playSound('join');
     switchScreen('lobby');
     showToast(`Room berhasil dibuat! Kode: ${room.code}`, 'success');
+
+    // Simpan session agar saat refresh tetap di dalam room
+    const me = roomSystem.getMyPlayer();
+    const playerName = me ? me.name : inputPlayerName.value.trim();
+    sessionStorage.setItem(
+      'cihuy_room_session',
+      JSON.stringify({ role: 'host', roomCode: room.code, playerName })
+    );
+    window.history.replaceState(null, '', `?room=${room.code}`);
   },
 
   onRoomJoined: (room) => {
@@ -144,10 +153,29 @@ const roomSystem = new CihuyRoomSystem({
     playSound('join');
     switchScreen('lobby');
     showToast(`Berhasil masuk ke room ${room.code}!`, 'success');
+
+    // Simpan session agar saat refresh tetap di dalam room
+    const me = roomSystem.getMyPlayer();
+    const playerName = me ? me.name : inputPlayerName.value.trim();
+    sessionStorage.setItem(
+      'cihuy_room_session',
+      JSON.stringify({ role: 'guest', roomCode: room.code, playerName })
+    );
+    window.history.replaceState(null, '', `?room=${room.code}`);
   },
 
   onRoomUpdated: (room) => {
     renderLobby(room);
+  },
+
+  onPlayerJoined: (player) => {
+    playSound('join');
+    showToast(`Pemain "${player.name}" bergabung!`, 'info');
+  },
+
+  onPlayerLeft: (player) => {
+    delete playerPositions[player.id];
+    showToast(`Pemain "${player.name}" keluar dari room.`, 'info');
   },
 
   onChatMessage: (msg) => {
@@ -180,6 +208,8 @@ const roomSystem = new CihuyRoomSystem({
 
   onKicked: (reason) => {
     stopGameLoop();
+    sessionStorage.removeItem('cihuy_room_session');
+    window.history.replaceState(null, '', window.location.pathname);
     switchScreen('menu');
     showToast(reason, 'error');
   },
@@ -190,6 +220,9 @@ const roomSystem = new CihuyRoomSystem({
     btnJoinRoom.disabled = false;
     btnJoinRoom.querySelector('span').textContent = 'Gabung';
     showToast(message, 'error');
+    if (!roomSystem.room) {
+      sessionStorage.removeItem('cihuy_room_session');
+    }
   }
 });
 
@@ -280,6 +313,8 @@ btnCopyLink.addEventListener('click', () => {
 btnLeaveRoom.addEventListener('click', () => {
   stopGameLoop();
   if (hostTimerInterval) clearInterval(hostTimerInterval);
+  sessionStorage.removeItem('cihuy_room_session');
+  window.history.replaceState(null, '', window.location.pathname);
   roomSystem.leaveRoom();
   switchScreen('menu');
   showToast('Kamu telah keluar dari room.', 'info');
@@ -716,3 +751,41 @@ function renderCanvas() {
     ctx.fillText(`${p.name} (${p.score || 0})`, pos.x, pos.y - 22);
   });
 }
+
+// ============================================================================
+// AUTO-RESTORE SESSION SAAT REFRESH BROWSER
+// ============================================================================
+window.addEventListener('beforeunload', () => {
+  if (roomSystem.peer) {
+    try {
+      roomSystem.peer.destroy();
+    } catch (e) {}
+  }
+});
+
+(async function checkActiveSession() {
+  const sessionStr = sessionStorage.getItem('cihuy_room_session');
+  if (!sessionStr) return;
+
+  try {
+    const session = JSON.parse(sessionStr);
+    if (!session || !session.roomCode || !session.playerName) return;
+
+    inputPlayerName.value = session.playerName;
+    inputRoomCode.value = session.roomCode;
+    showToast(`Menyambungkan kembali ke room [${session.roomCode}]...`, 'info');
+
+    if (session.role === 'host') {
+      btnCreateRoom.disabled = true;
+      btnCreateRoom.querySelector('span').textContent = 'Menyambungkan...';
+      await roomSystem.createRoom(session.playerName, session.roomCode);
+    } else {
+      btnJoinRoom.disabled = true;
+      btnJoinRoom.querySelector('span').textContent = 'Menyambungkan...';
+      await roomSystem.joinRoom(session.roomCode, session.playerName);
+    }
+  } catch (err) {
+    sessionStorage.removeItem('cihuy_room_session');
+    switchScreen('menu');
+  }
+})();
