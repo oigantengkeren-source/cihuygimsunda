@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Simulasi Sistem Room (Host & Join) - CihuyGimSunda</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="toast-container" class="toast-container"></div>
+
+  <div class="app-container">
+    <!-- TOP BAR: STATUS MODUL & MODE SIMULASI -->
+    <header class="top-dev-bar glassmorphism">
+      <div class="dev-bar-left">
+        <span class="status-dot online"></span>
+        <strong>MODUL: <code>room-system.js</code></strong>
+        <span class="dev-tag">Siap Integrasi Frontend/UI</span>
+      </div>
+      <div class="dev-bar-right">
+        <button id="btn-toggle-docs" class="btn-icon">📖 Cara Pakai Kode untuk Tim UI</button>
+      </div>
+    </header>
+
+    <!-- MODAL DOKUMENTASI INTEGRASI UNTUK TIM FRONTEND/UI -->
+    <div id="docs-modal" class="modal-overlay" style="display: none;">
+      <div class="modal-content docs-modal-content glassmorphism">
+        <div class="docs-header">
+          <h2>📦 Panduan Integrasi <code>room-system.js</code></h2>
+          <button id="btn-close-docs" class="btn-icon">✕ Tutup</button>
+        </div>
+        <p class="docs-intro">
+          Halaman ini hanyalah <strong>Menu Simulasi</strong> untuk menguji bahwa sistem Host & Join bekerja. Tim Frontend/UI cukup mengambil file <code>room-system.js</code> dari GitHub ini dan memanggil fungsinya di tombol UI game utama:
+        </p>
+        <pre class="code-block"><code>&lt;!-- 1. Pasang script di HTML Game Utama --&gt;
+&lt;script src="room-system.js"&gt;&lt;/script&gt;
+
+&lt;script&gt;
+  // 2. Inisialisasi Sistem Room
+  const roomSystem = new CihuyRoomSystem({
+    maxPlayers: 8,
+    onRoomUpdated: (room) =&gt; {
+      // Update tampilan daftar pemain &amp; kode room di UI kalian
+      console.log("Kode Room:", room.code, "Pemain:", room.players);
+    },
+    onGameStarted: (room, initialData) =&gt; {
+      // Pindah dari layar Lobby ke layar Game kalian
+      mulaiGameUtama(room);
+    },
+    onGameData: (senderId, data) =&gt; {
+      // Terima posisi / aksi dari pemain lain secara real-time
+      updatePosisiTeman(senderId, data);
+    },
+    onError: (pesanError) =&gt; alert(pesanError)
+  });
+
+  // 3. Sambungkan ke Tombol UI Kalian:
+  // Saat tombol "Host / Buat Room" ditekan:
+  await roomSystem.createRoom("Budi");
+
+  // Saat tombol "Join Room" ditekan:
+  await roomSystem.joinRoom("K9X2B", "Siti");
+
+  // Saat pemain klik "Ready":
+  roomSystem.toggleReady();
+
+  // Saat Host klik "Start Game":
+  roomSystem.startGame();
+
+  // Saat di dalam game ingin kirim data (posisi/skor/aksi):
+  roomSystem.sendGameData({ x: 120, y: 80, anim: "run" });
+&lt;/script&gt;</code></pre>
+      </div>
+    </div>
+
+    <!-- SCREEN 1: MENU UTAMA SIMULASI -->
+    <main id="screen-menu" class="screen active">
+      <div class="menu-card glassmorphism">
+        <div class="header-branding">
+          <span class="badge-pill">SIMULASI &amp; TESTBENCH SISTEM ROOM</span>
+          <h1 class="logo-title">🎮 CIHUY<span>GIM</span></h1>
+          <p class="subtitle">Uji coba fungsi <code>createRoom()</code> dan <code>joinRoom(kode)</code> dari modul <code>room-system.js</code></p>
+        </div>
+
+        <div class="form-group">
+          <label for="input-player-name">Nama Pemain (Simulasi)</label>
+          <div class="input-icon-wrap">
+            <input type="text" id="input-player-name" placeholder="Masukkan nama pemain..." maxlength="16" autofocus>
+          </div>
+        </div>
+
+        <div class="menu-action-grid">
+          <!-- OPSI A: HOST (BUAT ROOM) -->
+          <div class="action-card">
+            <div class="action-header">
+              <h3>👑 Simulasi Host</h3>
+              <p>Memanggil fungsi <code>roomSystem.createRoom()</code> dan menghasilkan kode unik 5 digit.</p>
+            </div>
+            <button id="btn-create-room" class="btn btn-primary btn-block">
+              <span>Buat Room Baru</span>
+            </button>
+          </div>
+
+          <!-- OPSI B: JOIN (GABUNG ROOM) -->
+          <div class="action-card">
+            <div class="action-header">
+              <h3>👥 Simulasi Join</h3>
+              <p>Memanggil fungsi <code>roomSystem.joinRoom(kode)</code> untuk masuk ke room Host.</p>
+            </div>
+            <div class="join-input-group">
+              <input type="text" id="input-room-code" placeholder="KODE" maxlength="5" autocomplete="off" spellcheck="false">
+              <button id="btn-join-room" class="btn btn-secondary">
+                <span>Gabung</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="footer-hint">
+          ✅ <span>Serverless WebRTC Aktif:</span> Bisa langsung dites antar-tab atau antar-HP/Laptop tanpa perlu setting IP/localhost!
+        </div>
+      </div>
+    </main>
+
+    <!-- SCREEN 2: LOBBY / WAITING ROOM SIMULASI -->
+    <main id="screen-lobby" class="screen">
+      <div class="lobby-layout">
+        <!-- PANEL KIRI: INFO ROOM & PEMAIN -->
+        <section class="lobby-main glassmorphism">
+          <div class="lobby-header">
+            <div>
+              <div class="room-tag">SIMULASI LOBBY ROOM</div>
+              <div class="room-code-display">
+                <span class="label">KODE ROOM:</span>
+                <strong id="display-room-code">-----</strong>
+                <button id="btn-copy-code" class="btn-icon" title="Salin Kode Room">📋 Salin Kode</button>
+                <button id="btn-copy-link" class="btn-icon" title="Salin Link Undangan">🔗 Salin Link</button>
+              </div>
+            </div>
+            <div class="player-count-wrap">
+              <span id="player-count">1</span>/8 Pemain
+            </div>
+          </div>
+
+          <div class="players-section">
+            <h3>Daftar Pemain Terhubung di Room</h3>
+            <div id="players-list" class="players-grid">
+              <!-- Kartu-kartu pemain diisi oleh simulation.js -->
+            </div>
+          </div>
+
+          <div class="lobby-footer">
+            <button id="btn-leave-room" class="btn btn-outline-danger">
+              🚪 Keluar Room
+            </button>
+
+            <div class="action-buttons-right">
+              <!-- Tombol untuk Guest -->
+              <button id="btn-toggle-ready" class="btn btn-warning" style="display: none;">
+                ⏳ Klik Siap (Ready)
+              </button>
+              <!-- Tombol untuk Host -->
+              <button id="btn-start-game" class="btn btn-success" style="display: none;">
+                🚀 Mulai Simulasi Game
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- PANEL KANAN: CHAT & SYSTEM LOG -->
+        <aside class="lobby-sidebar glassmorphism">
+          <div class="sidebar-header">
+            <h3>💬 Chat &amp; Log Event Room</h3>
+          </div>
+          <div id="chat-messages" class="chat-feed">
+            <div class="chat-item system">Room siap! Bagikan Kode Room ke teman untuk menguji koneksi.</div>
+          </div>
+          <form id="chat-form" class="chat-form">
+            <input type="text" id="chat-input" placeholder="Tes kirim pesan ke room..." maxlength="100">
+            <button type="submit" class="btn btn-sm btn-primary">Kirim</button>
+          </form>
+        </aside>
+      </div>
+    </main>
+
+    <!-- SCREEN 3: GAME ARENA SIMULASI SINKRONISASI DATA -->
+    <main id="screen-game" class="screen">
+      <div class="game-wrapper">
+        <div class="game-hud glassmorphism">
+          <div class="hud-item">
+            <span class="hud-label">SISA WAKTU</span>
+            <span id="hud-timer" class="hud-value highlight">45s</span>
+          </div>
+          <div class="hud-item">
+            <span class="hud-label">SKOR SAYA</span>
+            <span id="hud-score" class="hud-value">0</span>
+          </div>
+          <div class="hud-item code-pill">
+            <span class="hud-label">ROOM:</span>
+            <span id="hud-room-code">-----</span>
+          </div>
+          <div class="hud-item">
+            <button id="btn-back-lobby-top" class="btn-icon">🔙 Kembali ke Lobby</button>
+          </div>
+        </div>
+
+        <div class="arena-container">
+          <canvas id="game-canvas" width="700" height="420"></canvas>
+          <div class="controls-hint">
+            🎮 <strong>Simulasi Sinkronisasi Real-Time:</strong> Gunakan <strong>W, A, S, D / Panah</strong> (atau sentuh area canvas di HP) untuk menguji pengiriman koordinat antar pemain di room yang sama.
+          </div>
+        </div>
+
+        <!-- OVERLAY HASIL AKHIR / GAME OVER -->
+        <div id="game-over-modal" class="modal-overlay" style="display: none;">
+          <div class="modal-content glassmorphism">
+            <div class="trophy-icon">🏆</div>
+            <h2>Simulasi Ronde Selesai!</h2>
+            <div id="winner-announcement" class="winner-text">Pemenang: -</div>
+
+            <div class="leaderboard-table-wrap">
+              <table class="leaderboard-table">
+                <thead>
+                  <tr>
+                    <th>Rank</th>
+                    <th>Pemain</th>
+                    <th>Skor</th>
+                  </tr>
+                </thead>
+                <tbody id="leaderboard-body"></tbody>
+              </table>
+            </div>
+
+            <div class="modal-actions">
+              <button id="btn-return-lobby" class="btn btn-primary" style="display: none;">
+                Kembali ke Lobby (Host)
+              </button>
+              <div id="waiting-host-notice" class="waiting-text" style="display: none;">
+                Menunggu Host mengembalikan room ke lobby...
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- INTI SISTEM YANG AKAN DIPAKAI TIM FRONTEND/UI -->
+  <script src="room-system.js"></script>
+  <!-- SCRIPT PENGHUBUNG KE MENU SIMULASI INI -->
+  <script src="simulation.js"></script>
+</body>
+</html>

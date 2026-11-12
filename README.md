@@ -1,77 +1,87 @@
-# 🎮 Cihuy Gim Sunda - Multiplayer Room Lobby System
+# 🎮 CihuyGimSunda — Modul Sistem Room Multiplayer (Host & Join Kode)
 
-Sistem lobi multiplayer berbasis web dengan mekanisme **Host & Join menggunakan Kode Room**, dilengkapi dengan *real-time state synchronization* (Socket.io) dan prototype mini-game arena interaktif.
-
----
-
-## ✨ Fitur Utama
-
-1. **Host Room System**:
-   - Pemain dapat membuat room baru dengan 1 klik.
-   - Server mengenerate **Kode Room 5 Karakter Unik** (misal: `K8X2W`, bebas dari karakter ambigu seperti `O/0` dan `I/1`).
-   - Tombol **Salin Kode** dan **Salin Link Undangan Langsung** (`?room=KODE`) agar teman bisa bergabung tanpa mengetik manual.
-
-2. **Join Room System**:
-   - Teman memasukkan kode room di menu utama untuk bergabung ke room yang sama dengan host.
-   - Pengecekan otomatis: ketersediaan room, batas maksimal pemain (8 pemain), dan status permainan.
-
-3. **Lobby & Waiting Room**:
-   - Daftar pemain real-time dengan avatar warna unik & badge peran (`👑 HOST`, `✓ SIAP`, `⏳ MENUNGGU`).
-   - Tombol **Ready / Siap** untuk pemain tamu (guest).
-   - Tombol **Mulai Permainan** khusus untuk Host (hanya aktif jika semua pemain sudah siap).
-   - Fitur **Chat Room** terintegrasi secara real-time.
-   - Penanganan otomatis jika host keluar: hak host dialihkan ke pemain berikutnya.
-
-4. **Prototype Arena Mini-Game**:
-   - Sinkronisasi pergerakan karakter real-time antar tab/browser (WASD / Tombol Panah).
-   - Koin emas yang dapat dikumpulkan bersama secara kompetitif.
-   - Timer countdown & papan skor leaderboard langsung.
-   - Efek suara 8-bit retro sintetis (*Web Audio API* tanpa aset file berat).
-   - Tombol kembali ke lobby setelah ronde selesai.
+Repository ini menyimpan **kode sistem Room Multiplayer (Host & Join menggunakan Kode Unik)** yang siap diintegrasikan langsung ke Frontend/UI Game utama, dilengkapi dengan **Menu Simulasi** untuk menguji bahwa seluruh fungsi kode berjalan dengan baik.
 
 ---
 
-## 🚀 Cara Menjalankan Proyek
+## 📦 File Utama untuk Tim Frontend / UI
 
-### 1. Buka Terminal di Folder Proyek
-```bash
-cd C:\Users\oi\.gemini\antigravity\scratch\cihuygimsunda
+| Nama File | Fungsi |
+| :--- | :--- |
+| **[`room-system.js`](./room-system.js)** | **FILE INTI (CORE MODULE).** Berisi class `CihuyRoomSystem` yang menangani pembuatan kode room, join room, daftar pemain, status ready, chat, dan pengiriman data game real-time antar-device tanpa perlu setup server lokal. |
+| **[`index.html`](./index.html)** & **[`simulation.js`](./simulation.js)** | **MENU SIMULASI (TESTBENCH).** Halaman antarmuka sementara yang hanya digunakan untuk mengetes dan mensimulasikan bahwa kode di `room-system.js` bekerja dengan baik. |
+| **[`server.js`](./server.js)** | *(Opsional)* Alternatif server backend Node.js + Socket.io jika tim ingin menjalankan server khusus sendiri. |
+
+---
+
+## 🛠️ Cara Integrasi ke Frontend / UI Game Utama
+
+Tim Frontend/UI cukup memanggil file **`room-system.js`** ke dalam proyek game utama (bisa di-copy filenya atau dipanggil langsung dari repository GitHub ini):
+
+### 1. Pasang Script di HTML Game Utama
+```html
+<script src="room-system.js"></script>
 ```
 
-### 2. Jalankan Server
-```bash
-npm start
-```
-*(Atau gunakan `npm run dev` untuk mode auto-reload).*
+### 2. Inisialisasi Sistem & Sambungkan ke UI Kalian
+```javascript
+const roomSystem = new CihuyRoomSystem({
+  maxPlayers: 8,
 
-### 3. Uji Coba Multiplayer di Browser
-1. Buka browser dan akses **`http://localhost:3000`**.
-2. Masukkan nama pemain (misal: `HostPlayer`), lalu klik **"Buat Room Baru"**.
-3. Buka jendela browser baru / tab *Incognito* / browser lain, lalu akses **`http://localhost:3000`**.
-4. Masukkan nama pemain kedua (misal: `TemanKu`), masukkan kode room dari host, lalu klik **"Gabung"**.
-5. Di layar tamu, klik tombol **"Klik Siap (Ready)"**.
-6. Di layar host, klik **"Mulai Permainan"**!
+  // Dipanggil otomatis setiap ada pemain masuk/keluar/klik ready
+  onRoomUpdated: (room) => {
+    console.log("Kode Room:", room.code);
+    console.log("Daftar Pemain:", room.players);
+    // -> Update tampilan daftar pemain di UI kalian di sini
+  },
+
+  // Dipanggil saat Host menekan tombol Start Game
+  onGameStarted: (room, initialData) => {
+    console.log("Permainan dimulai!", room, initialData);
+    // -> Pindahkan layar UI dari Lobby ke Arena Game kalian
+  },
+
+  // Dipanggil saat menerima data koordinat/skor/aksi dari pemain lain di room yang sama
+  onGameData: (senderId, payload) => {
+    console.log("Data dari pemain:", senderId, payload);
+    // -> Update posisi/animasi karakter teman di game kalian
+  },
+
+  // Dipanggil jika kode room salah atau room penuh
+  onError: (pesanError) => {
+    alert(pesanError);
+  }
+});
+```
+
+### 3. Panggil Fungsi pada Tombol-Tombol Menu Kalian
+```javascript
+// A. Saat tombol "Buat Room (Host)" ditekan:
+const room = await roomSystem.createRoom("NamaHost");
+console.log("Bagikan kode ini ke teman:", room.code); // Contoh: "K9X2B"
+
+// B. Saat tombol "Gabung Room (Join)" ditekan dengan input kode:
+await roomSystem.joinRoom("K9X2B", "NamaTeman");
+
+// C. Saat pemain tamu menekan tombol "Siap / Ready":
+roomSystem.toggleReady();
+
+// D. Saat Host menekan tombol "Mulai Game":
+roomSystem.startGame({ map: "level_1" });
+
+// E. Mengirim data pergerakan/aksi selama di dalam game:
+roomSystem.sendGameData({ type: "MOVE", x: 150, y: 200 });
+
+// F. Keluar dari room:
+roomSystem.leaveRoom();
+```
 
 ---
 
-## 📁 Struktur File
+## 🧪 Cara Mencoba Menu Simulasi
 
-```text
-cihuygimsunda/
-├── package.json        # Konfigurasi dependensi (Express, Socket.io)
-├── server.js          # Server Socket.io & logika manajemen room
-├── public/
-│   ├── index.html     # Struktur UI (Menu, Lobby, Arena Game, Modal)
-│   ├── style.css      # Desain modern dark gaming & glassmorphism
-│   └── game.js        # Client Socket.io, event listener, dan canvas loop
-├── .gitignore         # Mengabaikan node_modules
-└── README.md          # Dokumentasi proyek
-```
-
----
-
-## 🌐 Deploy Online (Bisa Dimainkan Jarak Jauh)
-Proyek ini siap dideploy ke platform gratis seperti:
-- **Render.com** (Pilih Web Service, build command `npm install`, start command `npm start`)
-- **Railway.app** (Hubungkan repo GitHub langsung)
-- **Glitch / Replit**
+Untuk mencoba dan memastikan kodenya bekerja:
+1. Buka halaman simulasi (`index.html` atau melalui link GitHub Pages repository ini).
+2. Klik **"Buat Room Baru"** di tab/perangkat pertama untuk mendapatkan **Kode Room 5 karakter**.
+3. Buka tab/perangkat kedua, masukkan **Kode Room** tersebut di kolom **Simulasi Join**, lalu klik **"Gabung"**.
+4. Kedua perangkat akan langsung berada di satu room yang sama dan dapat menguji fitur **Ready**, **Chat**, hingga **Mulai Simulasi Game**.

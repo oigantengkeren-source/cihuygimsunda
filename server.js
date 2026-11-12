@@ -26,7 +26,8 @@ function getLocalIp() {
   return 'localhost';
 }
 
-// Sajikan file static dari folder public
+// Sajikan file static dari root repo (untuk GitHub Pages & modul) serta folder public
+app.use(express.static(__dirname));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Endpoint untuk info jaringan (membantu menampilkan IP ke pemain di UI)
