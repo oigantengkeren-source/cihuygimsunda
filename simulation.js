@@ -166,6 +166,19 @@ const roomSystem = new CihuyRoomSystem({
 
   onRoomUpdated: (room) => {
     renderLobby(room);
+    if (roomSystem.isHost && room) {
+      const me = roomSystem.getMyPlayer();
+      const playerName = me ? me.name : inputPlayerName.value.trim();
+      sessionStorage.setItem(
+        'cihuy_room_session',
+        JSON.stringify({
+          role: 'host',
+          roomCode: room.code,
+          playerName,
+          previousGuests: room.players.filter((p) => !p.isHost)
+        })
+      );
+    }
   },
 
   onPlayerJoined: (player) => {
@@ -394,6 +407,8 @@ function renderLobby(room) {
     let statusBadge = '';
     if (p.isHost) {
       statusBadge = '<span class="badge badge-host">👑 HOST</span>';
+    } else if (p.isReconnecting) {
+      statusBadge = '<span class="badge badge-waiting">🔄 MENYAMBUNGKAN...</span>';
     } else if (p.isReady) {
       statusBadge = '<span class="badge badge-ready">✓ SIAP</span>';
     } else {
@@ -783,7 +798,12 @@ window.addEventListener('beforeunload', () => {
     if (session.role === 'host') {
       btnCreateRoom.disabled = true;
       btnCreateRoom.querySelector('span').textContent = 'Menyambungkan...';
-      await roomSystem.createRoom(session.playerName, session.roomCode);
+      await roomSystem.createRoom(
+        session.playerName,
+        session.roomCode,
+        0,
+        session.previousGuests || []
+      );
     } else {
       btnJoinRoom.disabled = true;
       btnJoinRoom.querySelector('span').textContent = 'Menyambungkan...';

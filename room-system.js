@@ -114,6 +114,8 @@
       this.heartbeatInterval = null;
       // Koneksi ke Host (Khusus Guest: DataConnection)
       this.hostConnection = null;
+      this.lastHostContact = Date.now();
+      this.guestWatchdogInterval = null;
       this._isReconnectingToHost = false;
     }
 
@@ -155,7 +157,7 @@
      * @param {string} [customCode] Opsional: kode kustom jika ingin ditentukan sendiri
      * @returns {Promise<Object>} Data room yang berhasil dibuat
      */
-    async createRoom(playerName, customCode = null, _retryCount = 0) {
+    async createRoom(playerName, customCode = null, _retryCount = 0, previousGuests = []) {
       await ensurePeerJSLoaded();
       this.leaveRoom();
 
@@ -181,13 +183,23 @@
             customData: {}
           };
 
+          const initialPlayers = [hostPlayer];
+          if (Array.isArray(previousGuests) && previousGuests.length > 0) {
+            previousGuests.forEach((g) => {
+              initialPlayers.push({
+                ...g,
+                isReconnecting: true
+              });
+            });
+          }
+
           this.room = {
             code: roomCode,
             hostId: this.myPlayerId,
             state: 'lobby', // 'lobby' | 'playing' | 'ended'
             maxPlayers: this.maxPlayers,
             createdAt: Date.now(),
-            players: [hostPlayer]
+            players: initialPlayers
           };
 
           this._setupHostListeners();
@@ -206,9 +218,9 @@
               return this.createRoom(playerName).then(resolve).catch(reject);
             }
             // Jika Host sedang me-refresh halaman, tunggu server PeerJS melepaskan ID sesi lama
-            if (_retryCount < 5) {
+            if (_retryCount < 6) {
               setTimeout(() => {
-                this.createRoom(playerName, customCode, _retryCount + 1)
+                this.createRoom(playerName, customCode, _retryCount + 1, previousGuests)
                   .then(resolve)
                   .catch(reject);
               }, 1000);
@@ -302,13 +314,39 @@
             this._handleGuestDisconnect(guestId);
           }
         });
-      }, 2500);
+      }, 1200);
     }
 
     _stopHostHeartbeat() {
       if (this.heartbeatInterval) {
         clearInterval(this.heartbeatInterval);
         this.heartbeatInterval = null;
+      }
+    }
+
+    /**
+     * Watchdog timer pada sisi Guest: jika Host me-refresh atau koneksi mati diam-diam
+     * tanpa mengirim PING selama 2.8 detik, Guest otomatis menyambung kembali
+     */
+    _startGuestWatchdog(roomCode, playerName, customData = {}) {
+      this._stopGuestWatchdog();
+      this.lastHostContact = Date.now();
+      this.guestWatchdogInterval = setInterval(() => {
+        if (this.isHost || !this.room) {
+          this._stopGuestWatchdog();
+          return;
+        }
+
+        if (!this._isReconnectingToHost && Date.now() - this.lastHostContact > 2800) {
+          this._attemptGuestReconnectToHost(roomCode, playerName, customData);
+        }
+      }, 800);
+    }
+
+    _stopGuestWatchdog() {
+      if (this.guestWatchdogInterval) {
+        clearInterval(this.guestWatchdogInterval);
+        this.guestWatchdogInterval = null;
       }
     }
 
@@ -346,6 +384,12 @@
 
             // Perbarui ID pemain ke koneksi baru
             existingPlayer.id = guestId;
+            existingPlayer.isReconnecting = false;
+            if (typeof packet.isReady === 'boolean') {
+              existingPlayer.isReady = packet.isReady;
+            }
+            if (packet.color) existingPlayer.color = packet.color;
+            if (typeof packet.score === 'number') existingPlayer.score = packet.score;
             if (packet.customData) {
               existingPlayer.customData = { ...existingPlayer.customData, ...packet.customData };
             }
@@ -556,6 +600,7 @@
           });
 
           conn.on('data', (packet) => {
+            this.lastHostContact = Date.now();
             if (!packet || !packet.type) return;
 
             if (packet.type === 'JOIN_ACCEPTED') {
@@ -563,6 +608,8 @@
               isResolved = true;
               this.myPlayerId = packet.playerId;
               this.room = packet.room;
+              this.lastHostContact = Date.now();
+              this._startGuestWatchdog(cleanCode, cleanName, customData);
               this._log('JOIN_SUCCESS', `Berhasil masuk ke room ${cleanCode}`);
               this.onRoomJoined(this.room);
               this.onRoomUpdated(this.room);
@@ -990,6 +1037,7 @@
      */
     leaveRoom() {
       this._stopHostHeartbeat();
+      this._stopGuestWatchdog();
       this._isReconnectingToHost = false;
 
       if (!this.isHost && this.hostConnection && this.hostConnection.open) {
