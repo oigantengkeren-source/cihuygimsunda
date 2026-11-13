@@ -44,7 +44,7 @@
     '#84CC16'  // Lime
   ];
 
-  // Konfigurasi WebRTC STUN Server publik agar bisa tembus NAT / Data Seluler / Beda Wi-Fi
+  // Konfigurasi WebRTC STUN/TURN Server publik agar bisa tembus NAT / Data Seluler / Beda Wi-Fi
   const DEFAULT_PEER_CONFIG = {
     debug: 1,
     config: {
@@ -52,10 +52,84 @@
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun.services.mozilla.com' }
-      ]
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
+        { urls: 'stun:stun.cloudflare.com:3478' },
+        { urls: 'stun:openrelay.metered.ca:80' },
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelay',
+          credential: 'openrelay'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443',
+          username: 'openrelay',
+          credential: 'openrelay'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+          username: 'openrelay',
+          credential: 'openrelay'
+        }
+      ],
+      iceCandidatePoolSize: 10
     }
   };
+
+  /**
+   * Virtual DataConnection untuk komunikasi instan antar-tab pada browser yang sama
+   * menggunakan BroadcastChannel (0ms latency, kebal background tab throttling).
+   */
+  class VirtualLocalConnection {
+    constructor(peerId, channel) {
+      this.peer = peerId;
+      this.channel = channel;
+      this.open = true;
+      this.isLocal = true;
+    }
+    send(packet) {
+      if (this.open && this.channel) {
+        try {
+          this.channel.postMessage({
+            target: this.peer,
+            senderId: 'host',
+            data: packet
+          });
+        } catch (e) {
+          console.warn('[VirtualLocalConnection send error]', e);
+        }
+      }
+    }
+    close() {
+      this.open = false;
+    }
+  }
+
+  class GuestVirtualLocalConnection {
+    constructor(channel, guestId) {
+      this.peer = 'host';
+      this.channel = channel;
+      this.open = true;
+      this.isLocal = true;
+      this.guestId = guestId;
+    }
+    send(packet) {
+      if (this.open && this.channel) {
+        try {
+          this.channel.postMessage({
+            target: 'host',
+            senderId: this.guestId,
+            data: packet
+          });
+        } catch (e) {
+          console.warn('[GuestVirtualLocalConnection send error]', e);
+        }
+      }
+    }
+    close() {
+      this.open = false;
+    }
+  }
 
   // Helper: Pastikan PeerJS sudah dimuat di halaman
   function ensurePeerJSLoaded() {
@@ -119,6 +193,8 @@
       this.lastHostContact = Date.now();
       this.guestWatchdogInterval = null;
       this._isReconnectingToHost = false;
+      this._localChannel = null;
+      this._visibilityListenerAttached = false;
     }
 
     /**
@@ -206,11 +282,25 @@
 
           this._setupHostListeners();
           this._startHostHeartbeat();
+          this._initHostLocalChannel(roomCode);
+          this._setupVisibilityListener();
           this._log('CREATE_ROOM', `Room ${roomCode} dibuat oleh ${cleanName}`);
 
           this.onRoomCreated(this.room);
           this.onRoomUpdated(this.room);
           resolve(this.room);
+        });
+
+        // Tangani sinyal terputus agar Host tidak offline diam-diam
+        peer.on('disconnected', () => {
+          this._log('HOST_DISCONNECTED', 'Sinyal terputus dari server. Mencoba menyambung kembali...');
+          if (this.peer && !this.peer.destroyed && this.isHost) {
+            try {
+              this.peer.reconnect();
+            } catch (e) {
+              console.warn('[PeerJS Reconnect Error]', e);
+            }
+          }
         });
 
         peer.on('error', (err) => {
@@ -274,6 +364,55 @@
     }
 
     /**
+     * Inisialisasi kanal komunikasi lokal antar-tab untuk Host
+     */
+    _initHostLocalChannel(roomCode) {
+      if (this._localChannel) {
+        try { this._localChannel.close(); } catch (e) {}
+        this._localChannel = null;
+      }
+      if (typeof window === 'undefined' || !('BroadcastChannel' in window)) return;
+
+      try {
+        this._localChannel = new BroadcastChannel('cihuy_bc_' + roomCode);
+        this._localChannel.onmessage = (event) => {
+          const msg = event.data;
+          if (!msg || msg.target !== 'host' || !msg.senderId) return;
+
+          const senderId = msg.senderId;
+          let virtualConn = this.guestConnections.get(senderId);
+          if (!virtualConn || !virtualConn.isLocal) {
+            virtualConn = new VirtualLocalConnection(senderId, this._localChannel);
+          }
+
+          this.guestLastSeen.set(senderId, Date.now());
+          this._handleHostReceiveData(virtualConn, msg.data);
+        };
+      } catch (e) {
+        console.warn('[Host BroadcastChannel Init Error]', e);
+      }
+    }
+
+    /**
+     * Listener saat tab kembali aktif (fokus) agar koneksi sinyal pulih otomatis
+     */
+    _setupVisibilityListener() {
+      if (typeof document === 'undefined' || this._visibilityListenerAttached) return;
+      this._visibilityListenerAttached = true;
+
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          if (this.isHost && this.peer && this.peer.disconnected && !this.peer.destroyed) {
+            try {
+              this._log('TAB_ACTIVE', 'Tab kembali aktif, menyinkronkan koneksi sinyal...');
+              this.peer.reconnect();
+            } catch (e) {}
+          }
+        }
+      });
+    }
+
+    /**
      * Heartbeat otomatis dari Host ke semua Guest agar jika ada pemain yang
      * menutup browser / hilang sinyal, pemain tersebut langsung dihapus dari room
      */
@@ -285,6 +424,13 @@
           return;
         }
 
+        // Cek dan pulihkan koneksi ke server sinyal jika terputus saat tab di latar belakang
+        if (this.peer && this.peer.disconnected && !this.peer.destroyed) {
+          try {
+            this.peer.reconnect();
+          } catch (e) {}
+        }
+
         const now = Date.now();
         this.guestConnections.forEach((conn, guestId) => {
           if (!conn || !conn.open) {
@@ -292,8 +438,8 @@
             return;
           }
           const lastSeen = this.guestLastSeen.get(guestId) || now;
-          if (now - lastSeen > 8000) {
-            // Lebih dari 8 detik tidak ada sinyal sama sekali, putuskan pemain
+          if (now - lastSeen > 10000) {
+            // Lebih dari 10 detik tidak ada sinyal sama sekali, putuskan pemain
             this._handleGuestDisconnect(guestId);
             try { conn.close(); } catch (e) {}
             return;
@@ -568,29 +714,112 @@
       const targetPeerId = PEER_PREFIX + cleanCode;
 
       return new Promise((resolve, reject) => {
-        const peer = new global.Peer(DEFAULT_PEER_CONFIG);
         let isResolved = false;
+        let peer = null;
+        let localChannel = null;
 
-        const timeout = setTimeout(() => {
-          if (!isResolved) {
-            isResolved = true;
-            this.leaveRoom();
-            const msg = `Room dengan kode "${cleanCode}" tidak ditemukan atau Host sedang offline.`;
-            this.onError(msg);
-            reject(new Error(msg));
+        const cleanupAndReject = (errMsg) => {
+          if (isResolved) return;
+          isResolved = true;
+          clearTimeout(timeout);
+          if (localChannel) {
+            try { localChannel.close(); } catch (e) {}
+            this._localChannel = null;
           }
-        }, 8000);
+          this.leaveRoom();
+          this.onError(errMsg);
+          reject(new Error(errMsg));
+        };
+
+        // 18 detik timeout (cukup untuk STUN/TURN & koneksi mobile Indonesia)
+        const timeout = setTimeout(() => {
+          cleanupAndReject(`Room dengan kode "${cleanCode}" tidak ditemukan atau Host sedang offline.`);
+        }, 18000);
+
+        this._log('SEARCHING_HOST', `Mencari Host room "${cleanCode}"...`);
+
+        // 1. Jalur Cepat: BroadcastChannel lokal (Instan 0ms jika dites antar-tab di browser yang sama)
+        const localGuestId = 'local_guest_' + Math.random().toString(36).substring(2, 9);
+        if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+          try {
+            localChannel = new BroadcastChannel('cihuy_bc_' + cleanCode);
+            localChannel.onmessage = (event) => {
+              const msg = event.data;
+              if (!msg || msg.target !== localGuestId || !msg.data) return;
+
+              if (msg.data.type === 'JOIN_ACCEPTED') {
+                if (isResolved) return;
+                isResolved = true;
+                clearTimeout(timeout);
+
+                if (peer) {
+                  try { peer.destroy(); } catch (e) {}
+                  this.peer = null;
+                }
+
+                const virtualConn = new GuestVirtualLocalConnection(localChannel, localGuestId);
+                this._localChannel = localChannel;
+                this.hostConnection = virtualConn;
+                this.myPlayerId = msg.data.playerId;
+                this.room = msg.data.room;
+                this.isHost = false;
+                this.lastHostContact = Date.now();
+
+                // Dengarkan paket selanjutnya dari Host lokal
+                localChannel.onmessage = (ev) => {
+                  const packet = ev.data;
+                  if (!packet || packet.target !== localGuestId || !packet.data) return;
+                  this._handleGuestReceiveData(packet.data);
+                };
+
+                this._startGuestWatchdog(cleanCode, cleanName, customData);
+                this._log('JOIN_SUCCESS', `Berhasil terhubung ke room ${cleanCode} (koneksi tab lokal)!`);
+                this.onRoomJoined(this.room);
+                this.onRoomUpdated(this.room);
+                resolve(this.room);
+              } else if (msg.data.type === 'JOIN_REJECTED') {
+                cleanupAndReject(msg.data.reason || 'Gagal bergabung ke room.');
+              }
+            };
+
+            // Kirim request ke tab Host
+            localChannel.postMessage({
+              target: 'host',
+              senderId: localGuestId,
+              data: {
+                type: 'JOIN_REQUEST',
+                playerName: cleanName,
+                customData
+              }
+            });
+          } catch (e) {
+            console.warn('[BroadcastChannel Join Error]', e);
+          }
+        }
+
+        // 2. Jalur WebRTC PeerJS (untuk koneksi antar HP/Laptop/Device berbeda via Internet)
+        try {
+          peer = new global.Peer(DEFAULT_PEER_CONFIG);
+        } catch (err) {
+          cleanupAndReject('Gagal menginisialisasi modul jaringan: ' + err.message);
+          return;
+        }
 
         peer.on('open', (myId) => {
+          if (isResolved) return;
           this.peer = peer;
           this.myPlayerId = myId;
           this.isHost = false;
 
-          const conn = peer.connect(targetPeerId, { reliable: true });
+          this._log('CONNECTING_HOST', `Terhubung ke server sinyal, menyambungkan ke Host ${cleanCode}...`);
+
+          // PENTING: Jangan sertakan { reliable: true } di PeerJS 1.5.4 modern!
+          const conn = peer.connect(targetPeerId);
           this.hostConnection = conn;
 
           conn.on('open', () => {
-            this._log('CONNECTING_HOST', `Terhubung ke sinyal room ${cleanCode}, mengirim request join...`);
+            if (isResolved) return;
+            this._log('HANDSHAKE', `Jalur WebRTC terbuka, mengirim request gabung ke Host...`);
             conn.send({
               type: 'JOIN_REQUEST',
               playerName: cleanName,
@@ -603,22 +832,25 @@
             if (!packet || !packet.type) return;
 
             if (packet.type === 'JOIN_ACCEPTED') {
-              clearTimeout(timeout);
+              if (isResolved) return;
               isResolved = true;
+              clearTimeout(timeout);
+
+              if (localChannel) {
+                try { localChannel.close(); } catch (e) {}
+                this._localChannel = null;
+              }
+
               this.myPlayerId = packet.playerId;
               this.room = packet.room;
               this.lastHostContact = Date.now();
               this._startGuestWatchdog(cleanCode, cleanName, customData);
-              this._log('JOIN_SUCCESS', `Berhasil masuk ke room ${cleanCode}`);
+              this._log('JOIN_SUCCESS', `Berhasil masuk ke room ${cleanCode} via WebRTC!`);
               this.onRoomJoined(this.room);
               this.onRoomUpdated(this.room);
               resolve(this.room);
             } else if (packet.type === 'JOIN_REJECTED') {
-              clearTimeout(timeout);
-              isResolved = true;
-              this.leaveRoom();
-              this.onError(packet.reason || 'Gagal bergabung ke room.');
-              reject(new Error(packet.reason));
+              cleanupAndReject(packet.reason || 'Gagal bergabung ke room.');
             } else {
               this._handleGuestReceiveData(packet);
             }
@@ -635,16 +867,13 @@
         });
 
         peer.on('error', (err) => {
-          clearTimeout(timeout);
-          if (!isResolved) {
-            isResolved = true;
-            this.leaveRoom();
-            const msg =
-              err.type === 'peer-unavailable'
-                ? `Kode Room "${cleanCode}" tidak ditemukan! Pastikan kode benar dan Host sudah membuat room.`
-                : `Koneksi gagal: ${err.message || err.type}`;
-            this.onError(msg);
-            reject(new Error(msg));
+          console.warn('[PeerJS error]', err);
+          if (err.type === 'peer-unavailable') {
+            setTimeout(() => {
+              if (!isResolved) {
+                cleanupAndReject(`Kode Room "${cleanCode}" tidak ditemukan! Pastikan kode benar dan Host sudah membuat room.`);
+              }
+            }, 1200);
           }
         });
       });
@@ -768,7 +997,7 @@
 
         const connectToNewHost = () => {
           if (!this._isReconnectingToHost) return;
-          const conn = this.peer.connect(targetPeerId, { reliable: true });
+          const conn = this.peer.connect(targetPeerId);
 
           const connTimeout = setTimeout(() => {
             if (this._isReconnectingToHost) {
@@ -1170,7 +1399,21 @@
       this._stopGuestWatchdog();
       this._isReconnectingToHost = false;
 
-      if (!this.isHost && this.hostConnection && this.hostConnection.open) {
+      if (this._localChannel) {
+        try {
+          if (!this.isHost && this.myPlayerId) {
+            this._localChannel.postMessage({
+              target: 'host',
+              senderId: this.myPlayerId,
+              data: { type: 'LEAVE_ROOM' }
+            });
+          }
+          this._localChannel.close();
+        } catch (e) {}
+        this._localChannel = null;
+      }
+
+      if (!this.isHost && this.hostConnection && this.hostConnection.open && !this.hostConnection.isLocal) {
         try {
           this.hostConnection.send({ type: 'LEAVE_ROOM' });
         } catch (e) {}
@@ -1221,7 +1464,7 @@
 
       setTimeout(() => {
         try {
-          if (hostConn) hostConn.close();
+          if (hostConn && !hostConn.isLocal) hostConn.close();
           if (peer) peer.destroy();
         } catch (e) {}
       }, 100);

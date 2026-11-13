@@ -263,6 +263,19 @@ const roomSystem = new CihuyRoomSystem({
     showToast(reason || 'Host telah menutup room ini.', 'info');
   },
 
+  onLog: ({ time, event, detail }) => {
+    console.log(`[${time}] [${event}]:`, detail);
+    if (btnJoinRoom && btnJoinRoom.disabled) {
+      const span = btnJoinRoom.querySelector('span');
+      if (span) {
+        if (event === 'SEARCHING_HOST') span.textContent = 'Mencari Host...';
+        else if (event === 'CONNECTING_HOST') span.textContent = 'Menghubungkan...';
+        else if (event === 'HANDSHAKE') span.textContent = 'Membuka Jalur...';
+        else if (event === 'JOIN_SUCCESS') span.textContent = 'Berhasil!';
+      }
+    }
+  },
+
   onError: (message) => {
     btnCreateRoom.disabled = false;
     btnCreateRoom.querySelector('span').textContent = 'Buat Room Baru';
