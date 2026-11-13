@@ -166,9 +166,10 @@ const roomSystem = new CihuyRoomSystem({
 
   onRoomUpdated: (room) => {
     renderLobby(room);
-    if (roomSystem.isHost && room) {
-      const me = roomSystem.getMyPlayer();
-      const playerName = me ? me.name : inputPlayerName.value.trim();
+    if (!room) return;
+    const me = roomSystem.getMyPlayer();
+    const playerName = me ? me.name : inputPlayerName.value.trim();
+    if (roomSystem.isHost) {
       sessionStorage.setItem(
         'cihuy_room_session',
         JSON.stringify({
@@ -176,6 +177,15 @@ const roomSystem = new CihuyRoomSystem({
           roomCode: room.code,
           playerName,
           previousGuests: room.players.filter((p) => !p.isHost)
+        })
+      );
+    } else {
+      sessionStorage.setItem(
+        'cihuy_room_session',
+        JSON.stringify({
+          role: 'guest',
+          roomCode: room.code,
+          playerName
         })
       );
     }
@@ -223,8 +233,34 @@ const roomSystem = new CihuyRoomSystem({
     stopGameLoop();
     sessionStorage.removeItem('cihuy_room_session');
     window.history.replaceState(null, '', window.location.pathname);
+    playersList.innerHTML = '';
     switchScreen('menu');
     showToast(reason, 'error');
+  },
+
+  onHostMigrated: ({ newHost, isMe }) => {
+    playSound('join');
+    if (isMe) {
+      showToast('Kamu sekarang menjadi Host room ini!', 'success');
+      const me = roomSystem.getMyPlayer();
+      const playerName = me ? me.name : inputPlayerName.value.trim();
+      sessionStorage.setItem(
+        'cihuy_room_session',
+        JSON.stringify({ role: 'host', roomCode: roomSystem.room.code, playerName })
+      );
+    } else {
+      showToast(`Host keluar. "${newHost.name}" terpilih menjadi Host baru!`, 'info');
+    }
+  },
+
+  onRoomClosed: (reason) => {
+    stopGameLoop();
+    if (hostTimerInterval) clearInterval(hostTimerInterval);
+    sessionStorage.removeItem('cihuy_room_session');
+    window.history.replaceState(null, '', window.location.pathname);
+    playersList.innerHTML = '';
+    switchScreen('menu');
+    showToast(reason || 'Host telah menutup room ini.', 'info');
   },
 
   onError: (message) => {
@@ -235,6 +271,8 @@ const roomSystem = new CihuyRoomSystem({
     showToast(message, 'error');
     if (!roomSystem.room) {
       sessionStorage.removeItem('cihuy_room_session');
+      playersList.innerHTML = '';
+      switchScreen('menu');
     }
   }
 });
@@ -328,6 +366,7 @@ btnLeaveRoom.addEventListener('click', () => {
   if (hostTimerInterval) clearInterval(hostTimerInterval);
   sessionStorage.removeItem('cihuy_room_session');
   window.history.replaceState(null, '', window.location.pathname);
+  playersList.innerHTML = '';
   roomSystem.leaveRoom();
   switchScreen('menu');
   showToast('Kamu telah keluar dari room.', 'info');
